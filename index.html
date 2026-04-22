@@ -743,6 +743,59 @@
             display: block;
             margin-bottom: 4px;
         }
+
+        /* 拖拽排序 */
+        .drag-handle {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            z-index: 2;
+            opacity: 0.4;
+            transition: opacity 0.2s;
+            border-radius: 6px;
+        }
+
+        .drag-handle:hover {
+            opacity: 0.9;
+            background: rgba(255,255,255,0.15);
+        }
+
+        .drag-handle:active {
+            cursor: grabbing;
+        }
+
+        .drag-handle svg {
+            width: 16px;
+            height: 16px;
+            fill: #fff;
+        }
+
+        .countdown-card.dragging {
+            opacity: 0.5;
+            transform: scale(0.95) !important;
+            box-shadow: none !important;
+        }
+
+        .countdown-card.drag-over {
+            outline: 2px dashed rgba(255,255,255,0.5);
+            outline-offset: 4px;
+        }
+
+        .countdown-card.drag-ghost {
+            position: fixed;
+            z-index: 1000;
+            pointer-events: none;
+            transform: rotate(2deg) scale(1.02);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+            opacity: 0.9;
+            width: var(--drag-width);
+        }
     </style>
 </head>
 <body>
@@ -1094,7 +1147,8 @@
 
                 return '<div class="countdown-card theme-' + item.theme + (isExpired ? ' expired' : '') + '"' +
                     ' style="animation-delay: ' + (idx * 0.1) + 's"' +
-                    ' data-id="' + item.id + '">' +
+                    ' data-id="' + item.id + '" draggable="false">' +
+                    '<div class="drag-handle" title="拖拽排序"><svg viewBox="0 0 16 16"><circle cx="5" cy="3" r="1.5"/><circle cx="11" cy="3" r="1.5"/><circle cx="5" cy="8" r="1.5"/><circle cx="11" cy="8" r="1.5"/><circle cx="5" cy="13" r="1.5"/><circle cx="11" cy="13" r="1.5"/></svg></div>' +
                     '<div class="pulse-dot"></div>' +
                     '<div class="card-header">' +
                         '<span class="card-emoji">' + item.emoji + '</span>' +
@@ -1388,6 +1442,143 @@
         var shakeStyle = document.createElement('style');
         shakeStyle.textContent = '@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }';
         document.head.appendChild(shakeStyle);
+
+        // ========== 拖拽排序 ==========
+        var dragState = {
+            dragging: false,
+            sourceCard: null,
+            sourceId: null,
+            ghost: null,
+            offsetX: 0,
+            offsetY: 0,
+            lastOverCard: null
+        };
+
+        function getDragCard(el) {
+            return el ? el.closest('.countdown-card') : null;
+        }
+
+        function createGhost(card, x, y) {
+            var rect = card.getBoundingClientRect();
+            var ghost = card.cloneNode(true);
+            ghost.classList.add('drag-ghost');
+            ghost.style.setProperty('--drag-width', rect.width + 'px');
+            ghost.style.width = rect.width + 'px';
+            ghost.style.left = (x - dragState.offsetX) + 'px';
+            ghost.style.top = (y - dragState.offsetY) + 'px';
+            document.body.appendChild(ghost);
+            return ghost;
+        }
+
+        function moveGhost(x, y) {
+            if (!dragState.ghost) return;
+            dragState.ghost.style.left = (x - dragState.offsetX) + 'px';
+            dragState.ghost.style.top = (y - dragState.offsetY) + 'px';
+        }
+
+        function getCardAtPoint(x, y) {
+            if (dragState.ghost) dragState.ghost.style.display = 'none';
+            var el = document.elementFromPoint(x, y);
+            if (dragState.ghost) dragState.ghost.style.display = '';
+            return getDragCard(el);
+        }
+
+        function startDrag(card, x, y) {
+            var rect = card.getBoundingClientRect();
+            dragState.dragging = true;
+            dragState.sourceCard = card;
+            dragState.sourceId = card.getAttribute('data-id');
+            dragState.offsetX = x - rect.left;
+            dragState.offsetY = y - rect.top;
+            card.classList.add('dragging');
+            dragState.ghost = createGhost(card, x, y);
+        }
+
+        function onDragMove(x, y) {
+            if (!dragState.dragging) return;
+            moveGhost(x, y);
+            var overCard = getCardAtPoint(x, y);
+            if (dragState.lastOverCard && dragState.lastOverCard !== overCard) {
+                dragState.lastOverCard.classList.remove('drag-over');
+            }
+            if (overCard && overCard !== dragState.sourceCard) {
+                overCard.classList.add('drag-over');
+                dragState.lastOverCard = overCard;
+            } else {
+                dragState.lastOverCard = null;
+            }
+        }
+
+        function endDrag(x, y) {
+            if (!dragState.dragging) return;
+            var targetCard = getCardAtPoint(x, y);
+            if (targetCard && targetCard !== dragState.sourceCard) {
+                var targetId = targetCard.getAttribute('data-id');
+                var fromIdx = countdowns.findIndex(function(c) { return c.id === dragState.sourceId; });
+                var toIdx = countdowns.findIndex(function(c) { return c.id === targetId; });
+                if (fromIdx !== -1 && toIdx !== -1) {
+                    var moved = countdowns.splice(fromIdx, 1)[0];
+                    countdowns.splice(toIdx, 0, moved);
+                    saveData();
+                    syncToCloud();
+                    renderCards();
+                }
+            }
+            // 清理
+            if (dragState.sourceCard) dragState.sourceCard.classList.remove('dragging');
+            if (dragState.lastOverCard) dragState.lastOverCard.classList.remove('drag-over');
+            if (dragState.ghost) dragState.ghost.remove();
+            dragState.dragging = false;
+            dragState.sourceCard = null;
+            dragState.sourceId = null;
+            dragState.ghost = null;
+            dragState.lastOverCard = null;
+        }
+
+        // 鼠标事件
+        document.getElementById('cardsGrid').addEventListener('mousedown', function(e) {
+            var handle = e.target.closest('.drag-handle');
+            if (!handle) return;
+            e.preventDefault();
+            var card = getDragCard(handle);
+            if (card) startDrag(card, e.clientX, e.clientY);
+        });
+
+        document.addEventListener('mousemove', function(e) {
+            if (dragState.dragging) {
+                e.preventDefault();
+                onDragMove(e.clientX, e.clientY);
+            }
+        });
+
+        document.addEventListener('mouseup', function(e) {
+            if (dragState.dragging) endDrag(e.clientX, e.clientY);
+        });
+
+        // 触摸事件
+        document.getElementById('cardsGrid').addEventListener('touchstart', function(e) {
+            var handle = e.target.closest('.drag-handle');
+            if (!handle) return;
+            var card = getDragCard(handle);
+            if (!card) return;
+            var touch = e.touches[0];
+            startDrag(card, touch.clientX, touch.clientY);
+        }, { passive: true });
+
+        document.addEventListener('touchmove', function(e) {
+            if (dragState.dragging) {
+                e.preventDefault();
+                var touch = e.touches[0];
+                onDragMove(touch.clientX, touch.clientY);
+            }
+        }, { passive: false });
+
+        document.addEventListener('touchend', function(e) {
+            if (dragState.dragging) {
+                var touch = e.changedTouches[0];
+                endDrag(touch.clientX, touch.clientY);
+            }
+        });
 
         // 初始渲染 - 从云端加载数据
         initData();
