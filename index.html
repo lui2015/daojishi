@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>日期倒计时</title>
+    <title>大事件倒计时</title>
     <style>
         * {
             margin: 0;
@@ -676,6 +676,73 @@
             background: linear-gradient(135deg, #ef4444, #dc2626);
             color: #fff;
         }
+
+        /* 日期类型标签 */
+        .date-type-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
+        .date-type-badge.badge-workday {
+            background: rgba(255,255,255,0.25);
+            color: #fff;
+        }
+
+        .date-type-badge.badge-natural {
+            background: rgba(0,0,0,0.2);
+            color: rgba(255,255,255,0.85);
+        }
+
+        /* 工作日天数显示 */
+        .workday-info {
+            text-align: center;
+            font-size: 13px;
+            opacity: 0.8;
+            margin-top: -8px;
+            margin-bottom: 4px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* 日期类型选择器 */
+        .date-type-picker {
+            display: flex;
+            gap: 10px;
+        }
+
+        .date-type-option {
+            flex: 1;
+            padding: 10px 16px;
+            border-radius: 10px;
+            border: 2px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.05);
+            color: rgba(255,255,255,0.7);
+            font-size: 14px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .date-type-option:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .date-type-option.selected {
+            border-color: #a855f7;
+            background: rgba(168, 85, 247, 0.2);
+            color: #fff;
+        }
+
+        .date-type-option .opt-icon {
+            font-size: 18px;
+            display: block;
+            margin-bottom: 4px;
+        }
     </style>
 </head>
 <body>
@@ -687,7 +754,7 @@
         <div class="header">
             <div class="header-icon">
                 <div class="clock-icon"></div>
-                <h1>日期倒计时</h1>
+                <h1>大事件倒计时</h1>
             </div>
             <p>记录每一个重要时刻</p>
         </div>
@@ -714,6 +781,17 @@
             <div class="form-group">
                 <label>目标日期</label>
                 <input type="datetime-local" id="eventDate">
+            </div>
+            <div class="form-group">
+                <label>计算方式</label>
+                <div class="date-type-picker" id="dateTypePicker">
+                    <div class="date-type-option selected" data-type="natural">
+                        <span class="opt-icon">📅</span>自然日
+                    </div>
+                    <div class="date-type-option" data-type="workday">
+                        <span class="opt-icon">💼</span>工作日
+                    </div>
+                </div>
             </div>
             <div class="form-group">
                 <label>选择图标</label>
@@ -762,45 +840,167 @@
     </div>
 
     <script>
-        // 清除可能损坏的旧数据
-        (function cleanOldData() {
-            try {
-                const raw = localStorage.getItem('countdowns');
-                if (raw) {
-                    const data = JSON.parse(raw);
-                    // 验证数据完整性
-                    const valid = Array.isArray(data) && data.every(item =>
-                        item && typeof item.id === 'string' && item.name && item.date
-                    );
-                    if (!valid) {
-                        localStorage.removeItem('countdowns');
-                    }
-                }
-            } catch (e) {
-                localStorage.removeItem('countdowns');
-            }
-        })();
+        // API 配置 - 部署后会使用同一服务器的 3001 端口
+        var API_BASE = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+            ? 'http://localhost:3001/api'
+            : location.protocol + '//' + location.hostname + ':3001/api';
+        var USER_ID = localStorage.getItem('daojishi_user_id');
+        if (!USER_ID) {
+            USER_ID = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+            localStorage.setItem('daojishi_user_id', USER_ID);
+        }
 
-        // 数据管理 - 使用字符串 id 避免精度问题
-        let countdowns = JSON.parse(localStorage.getItem('countdowns') || '[]');
-        let editingId = null;   // 字符串 id 或 null
-        let deletingId = null;  // 字符串 id 或 null
+        // 数据管理
+        let countdowns = [];
+        let editingId = null;
+        let deletingId = null;
         let selectedEmoji = '🎉';
         let selectedTheme = 'pink';
+        let selectedDateType = 'natural';
+        let cloudAvailable = false;
 
         // 生成唯一 id
         function genId() {
             return 'cd_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
         }
 
+        // 云端 API 封装
+        function apiRequest(method, url, body) {
+            var opts = {
+                method: method,
+                headers: { 'Content-Type': 'application/json' }
+            };
+            if (body) opts.body = JSON.stringify(body);
+            return fetch(API_BASE + url, opts).then(function(r) { return r.json(); });
+        }
+
+        // 从云端加载数据
+        function loadFromCloud() {
+            return apiRequest('GET', '/countdowns?user_id=' + encodeURIComponent(USER_ID))
+                .then(function(res) {
+                    if (res.success && Array.isArray(res.data)) {
+                        cloudAvailable = true;
+                        return res.data.map(function(row) {
+                            return {
+                                id: row.id,
+                                name: row.name,
+                                date: row.date,
+                                emoji: row.emoji,
+                                theme: row.theme,
+                                dateType: row.date_type || 'natural'
+                            };
+                        });
+                    }
+                    return null;
+                })
+                .catch(function() {
+                    cloudAvailable = false;
+                    return null;
+                });
+        }
+
+        // 同步到云端
+        function syncToCloud() {
+            if (!cloudAvailable) return Promise.resolve();
+            return apiRequest('POST', '/countdowns/sync', {
+                user_id: USER_ID,
+                countdowns: countdowns
+            }).catch(function() {});
+        }
+
+        // 云端添加
+        function cloudAdd(item) {
+            if (!cloudAvailable) return Promise.resolve();
+            return apiRequest('POST', '/countdowns', {
+                id: item.id,
+                user_id: USER_ID,
+                name: item.name,
+                date: item.date,
+                emoji: item.emoji,
+                theme: item.theme,
+                dateType: item.dateType
+            }).catch(function() {});
+        }
+
+        // 云端更新
+        function cloudUpdate(item) {
+            if (!cloudAvailable) return Promise.resolve();
+            return apiRequest('PUT', '/countdowns/' + item.id, {
+                name: item.name,
+                date: item.date,
+                emoji: item.emoji,
+                theme: item.theme,
+                dateType: item.dateType
+            }).catch(function() {});
+        }
+
+        // 云端删除
+        function cloudDelete(id) {
+            if (!cloudAvailable) return Promise.resolve();
+            return apiRequest('DELETE', '/countdowns/' + id).catch(function() {});
+        }
+
         // 默认数据
-        if (countdowns.length === 0) {
-            countdowns = [
-                { id: genId(), name: '元旦', date: '2026-12-31T00:00:00', emoji: '🎉', theme: 'pink' },
-                { id: genId(), name: '春节', date: '2027-02-06T00:00:00', emoji: '🧧', theme: 'orange' },
-                { id: genId(), name: '国庆节', date: '2027-09-30T00:00:00', emoji: '🌟', theme: 'blue' }
+        function getDefaultCountdowns() {
+            return [
+                { id: genId(), name: '元旦', date: '2026-12-31T00:00:00', emoji: '🎉', theme: 'pink', dateType: 'natural' },
+                { id: genId(), name: '春节', date: '2027-02-06T00:00:00', emoji: '🧧', theme: 'orange', dateType: 'natural' },
+                { id: genId(), name: '国庆节', date: '2027-09-30T00:00:00', emoji: '🌟', theme: 'blue', dateType: 'workday' }
             ];
-            saveData();
+        }
+
+        // 初始化数据加载
+        function initData() {
+            loadFromCloud().then(function(cloudData) {
+                if (cloudData && cloudData.length > 0) {
+                    countdowns = cloudData;
+                    // 同步到本地缓存
+                    localStorage.setItem('countdowns', JSON.stringify(countdowns));
+                } else {
+                    // 云端无数据，尝试本地
+                    try {
+                        var local = JSON.parse(localStorage.getItem('countdowns') || '[]');
+                        if (Array.isArray(local) && local.length > 0) {
+                            countdowns = local;
+                            countdowns.forEach(function(item) {
+                                if (!item.dateType) item.dateType = 'natural';
+                            });
+                            // 将本地数据同步到云端
+                            syncToCloud();
+                        } else {
+                            countdowns = getDefaultCountdowns();
+                            localStorage.setItem('countdowns', JSON.stringify(countdowns));
+                            syncToCloud();
+                        }
+                    } catch (e) {
+                        countdowns = getDefaultCountdowns();
+                        localStorage.setItem('countdowns', JSON.stringify(countdowns));
+                        syncToCloud();
+                    }
+                }
+                renderCards();
+            });
+        }
+
+        // 计算两个日期之间的工作日天数（排除周六周日）
+        function countWorkdays(startDate, endDate) {
+            var start = new Date(startDate);
+            var end = new Date(endDate);
+            // 标准化到日期开始
+            start.setHours(0, 0, 0, 0);
+            end.setHours(0, 0, 0, 0);
+            if (start >= end) return 0;
+            var count = 0;
+            var current = new Date(start);
+            current.setDate(current.getDate() + 1); // 从第二天开始计算
+            while (current <= end) {
+                var day = current.getDay();
+                if (day !== 0 && day !== 6) {
+                    count++;
+                }
+                current.setDate(current.getDate() + 1);
+            }
+            return count;
         }
 
         // 背景粒子
@@ -884,6 +1084,13 @@
                 const isExpired = diff.total <= 0;
                 const dateStr = formatTargetDate(item.date);
                 const secOffset = circumference - (circumference * diff.seconds) / 60;
+                const isWorkday = item.dateType === 'workday';
+                var displayDays = diff.days;
+                var daysLabel = '天';
+                if (isWorkday) {
+                    displayDays = isExpired ? 0 : countWorkdays(new Date(), parseDate(item.date));
+                    daysLabel = '工作日';
+                }
 
                 return '<div class="countdown-card theme-' + item.theme + (isExpired ? ' expired' : '') + '"' +
                     ' style="animation-delay: ' + (idx * 0.1) + 's"' +
@@ -892,14 +1099,15 @@
                     '<div class="card-header">' +
                         '<span class="card-emoji">' + item.emoji + '</span>' +
                         '<div class="card-info">' +
-                            '<h3>' + item.name + (isExpired ? '<span class="expired-badge">已到期</span>' : '') + '</h3>' +
+                            '<h3>' + item.name + (isExpired ? '<span class="expired-badge">已到期</span>' : '') +
+                            (isWorkday ? '<span class="date-type-badge badge-workday">💼 工作日</span>' : '') + '</h3>' +
                             '<div class="target-date">' + dateStr + '</div>' +
                         '</div>' +
                     '</div>' +
                     '<div class="countdown-display">' +
                         '<div class="time-block">' +
-                            '<div class="time-value" id="days-' + item.id + '">' + diff.days + '</div>' +
-                            '<div class="time-label">天</div>' +
+                            '<div class="time-value" id="days-' + item.id + '">' + displayDays + '</div>' +
+                            '<div class="time-label">' + daysLabel + '</div>' +
                         '</div>' +
                         '<span class="time-separator">:</span>' +
                         '<div class="time-block">' +
@@ -964,7 +1172,12 @@
 
                 if (!daysEl) return;
 
-                daysEl.textContent = diff.days;
+                if (item.dateType === 'workday') {
+                    var isExpired = diff.total <= 0;
+                    daysEl.textContent = isExpired ? 0 : countWorkdays(new Date(), parseDate(item.date));
+                } else {
+                    daysEl.textContent = diff.days;
+                }
                 hoursEl.textContent = String(diff.hours).padStart(2, '0');
                 minutesEl.textContent = String(diff.minutes).padStart(2, '0');
 
@@ -1005,6 +1218,7 @@
                     document.getElementById('eventDate').value = item.date;
                     selectedEmoji = item.emoji;
                     selectedTheme = item.theme;
+                    selectedDateType = item.dateType || 'natural';
                 } else {
                     editingId = null;
                     title.textContent = '添加倒计时';
@@ -1012,6 +1226,7 @@
                     document.getElementById('eventDate').value = '';
                     selectedEmoji = '🎉';
                     selectedTheme = 'pink';
+                    selectedDateType = 'natural';
                 }
             } else {
                 title.textContent = '添加倒计时';
@@ -1019,10 +1234,12 @@
                 document.getElementById('eventDate').value = '';
                 selectedEmoji = '🎉';
                 selectedTheme = 'pink';
+                selectedDateType = 'natural';
             }
 
             updateEmojiSelection();
             updateThemeSelection();
+            updateDateTypeSelection();
             modal.classList.add('active');
         }
 
@@ -1059,6 +1276,20 @@
             });
         }
 
+        // 日期类型选择
+        document.getElementById('dateTypePicker').addEventListener('click', function(e) {
+            var option = e.target.closest('.date-type-option');
+            if (!option) return;
+            selectedDateType = option.dataset.type;
+            updateDateTypeSelection();
+        });
+
+        function updateDateTypeSelection() {
+            document.querySelectorAll('.date-type-option').forEach(function(el) {
+                el.classList.toggle('selected', el.dataset.type === selectedDateType);
+            });
+        }
+
         // 保存倒计时
         function saveCountdown() {
             var name = document.getElementById('eventName').value.trim();
@@ -1085,15 +1316,20 @@
                     item.date = date;
                     item.emoji = selectedEmoji;
                     item.theme = selectedTheme;
+                    item.dateType = selectedDateType;
+                    cloudUpdate(item);
                 }
             } else {
-                countdowns.push({
+                var newItem = {
                     id: genId(),
                     name: name,
                     date: date,
                     emoji: selectedEmoji,
-                    theme: selectedTheme
-                });
+                    theme: selectedTheme,
+                    dateType: selectedDateType
+                };
+                countdowns.push(newItem);
+                cloudAdd(newItem);
             }
 
             saveData();
@@ -1128,13 +1364,14 @@
         }
 
         function confirmDelete() {
+            cloudDelete(deletingId);
             countdowns = countdowns.filter(function(c) { return c.id !== deletingId; });
             saveData();
             renderCards();
             closeConfirm();
         }
 
-        // 持久化
+        // 持久化（本地缓存 + 云端已在各操作中单独同步）
         function saveData() {
             localStorage.setItem('countdowns', JSON.stringify(countdowns));
         }
@@ -1152,8 +1389,8 @@
         shakeStyle.textContent = '@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }';
         document.head.appendChild(shakeStyle);
 
-        // 初始渲染
-        renderCards();
+        // 初始渲染 - 从云端加载数据
+        initData();
     </script>
 </body>
-</html>
+</htm
