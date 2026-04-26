@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Runtime data / logs
+server/data/
+server/logs/
+*.log
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Codebuddy 本地状态（保留项目配置，忽略运行期缓存）
+.codebuddy/sessions/
+.codebuddy/cache/

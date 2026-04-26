@@ -796,6 +796,81 @@
             opacity: 0.9;
             width: var(--drag-width);
         }
+
+        /* ========== 账号 / 登录 ========== */
+        .account-bar {
+            position: absolute;
+            top: 20px;
+            right: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            z-index: 10;
+        }
+        .account-btn {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.15);
+            color: #fff;
+            padding: 8px 14px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            backdrop-filter: blur(8px);
+            transition: all 0.2s ease;
+        }
+        .account-btn:hover {
+            background: rgba(255,255,255,0.15);
+            transform: translateY(-1px);
+        }
+        .account-user {
+            color: rgba(255,255,255,0.9);
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .account-user .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #34d399;
+            box-shadow: 0 0 6px #34d399;
+        }
+
+        /* 登录/注册弹窗复用 modal 样式，但增加一个 tab 切换 */
+        .auth-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 18px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 4px;
+        }
+        .auth-tab {
+            flex: 1;
+            text-align: center;
+            padding: 8px 0;
+            border-radius: 8px;
+            cursor: pointer;
+            color: rgba(255,255,255,0.65);
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+        .auth-tab.active {
+            background: linear-gradient(135deg, #8b5cf6, #6366f1);
+            color: #fff;
+        }
+        .auth-hint {
+            font-size: 12px;
+            color: rgba(255,255,255,0.5);
+            margin-top: -6px;
+            margin-bottom: 12px;
+        }
+        .auth-error {
+            color: #fca5a5;
+            font-size: 12px;
+            min-height: 16px;
+            margin-top: -4px;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
@@ -803,6 +878,11 @@
     <div class="bg-particles" id="particles"></div>
 
     <div class="container">
+        <!-- 账号栏 -->
+        <div class="account-bar" id="accountBar">
+            <!-- JS 动态渲染 -->
+        </div>
+
         <!-- 头部 -->
         <div class="header">
             <div class="header-icon">
@@ -892,44 +972,281 @@
         </div>
     </div>
 
+    <!-- 登录 / 注册弹窗 -->
+    <div class="modal-overlay" id="authOverlay">
+        <div class="modal">
+            <h2 id="authTitle">欢迎回来</h2>
+            <div class="auth-tabs">
+                <div class="auth-tab active" data-auth-tab="login" onclick="switchAuthTab('login')">登录</div>
+                <div class="auth-tab" data-auth-tab="register" onclick="switchAuthTab('register')">注册</div>
+            </div>
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" id="authUsername" placeholder="3-20 位字母/数字/下划线" maxlength="20" autocomplete="username">
+            </div>
+            <div class="form-group" id="authDisplayNameGroup" style="display:none">
+                <label>昵称（可选）</label>
+                <input type="text" id="authDisplayName" placeholder="展示用名称" maxlength="30">
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" id="authPassword" placeholder="至少 6 位" maxlength="64" autocomplete="current-password">
+            </div>
+            <div class="auth-hint" id="authHint">登录后倒计时与偏好设置会自动云端同步</div>
+            <div class="auth-error" id="authError"></div>
+            <div class="modal-actions">
+                <button class="modal-btn btn-cancel" onclick="closeAuthModal()">取消</button>
+                <button class="modal-btn btn-primary" id="authSubmitBtn" onclick="submitAuth()">登录</button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        // API 配置 - 部署后会使用同一服务器的 3001 端口
-        var API_BASE = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
-            ? 'http://localhost:3001/api'
-            : location.protocol + '//' + location.hostname + ':3001/api';
+        // API 配置：
+        // - 本地开发（前端 8080、后端 3100 分离）：显式指向 http://localhost:3100/api
+        // - 部署（由后端同端口托管静态页 或 Nginx 反代到子路径 /dajishi/）：使用同源相对路径 + 当前子路径前缀
+        // 例如 https://www.luliming.xyz/dajishi/ -> API_BASE = https://www.luliming.xyz/dajishi/api
+        //     http://159.75.56.177:3001/         -> API_BASE = http://159.75.56.177:3001/api
+        var API_BASE;
+        if (location.port === '8080') {
+            API_BASE = 'http://localhost:3100/api';
+        } else {
+            // 取当前路径中第一段（如果存在）作为 basePath
+            var segs = location.pathname.split('/').filter(Boolean);
+            var basePath = segs.length > 0 ? '/' + segs[0] : '';
+            API_BASE = location.origin + basePath + '/api';
+        }
+
+        // 匿名 user_id（未登录时继续使用，兼容原有行为）
         var USER_ID = localStorage.getItem('daojishi_user_id');
         if (!USER_ID) {
             USER_ID = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
             localStorage.setItem('daojishi_user_id', USER_ID);
         }
 
+        // 登录态
+        var AUTH_TOKEN = localStorage.getItem('daojishi_token') || '';
+        var AUTH_USER = null; // { id, username, display_name }
+        try {
+            var cachedUser = localStorage.getItem('daojishi_user');
+            if (cachedUser) AUTH_USER = JSON.parse(cachedUser);
+        } catch (e) { AUTH_USER = null; }
+
+        // 用户偏好（默认值）
+        var USER_PREFS = {
+            defaultTheme: 'pink',
+            defaultEmoji: '🎉',
+            defaultDateType: 'natural'
+        };
+        try {
+            var cachedPrefs = localStorage.getItem('daojishi_prefs');
+            if (cachedPrefs) {
+                var p = JSON.parse(cachedPrefs);
+                if (p && typeof p === 'object') {
+                    USER_PREFS.defaultTheme = p.defaultTheme || USER_PREFS.defaultTheme;
+                    USER_PREFS.defaultEmoji = p.defaultEmoji || USER_PREFS.defaultEmoji;
+                    USER_PREFS.defaultDateType = p.defaultDateType || USER_PREFS.defaultDateType;
+                }
+            }
+        } catch (e) { /* ignore */ }
+
         // 数据管理
         let countdowns = [];
         let editingId = null;
         let deletingId = null;
-        let selectedEmoji = '🎉';
-        let selectedTheme = 'pink';
-        let selectedDateType = 'natural';
+        let selectedEmoji = USER_PREFS.defaultEmoji;
+        let selectedTheme = USER_PREFS.defaultTheme;
+        let selectedDateType = USER_PREFS.defaultDateType;
         let cloudAvailable = false;
+        let authMode = 'login'; // 'login' | 'register'
 
         // 生成唯一 id
         function genId() {
             return 'cd_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
         }
 
-        // 云端 API 封装
+        // 云端 API 封装（统一带 Authorization）
         function apiRequest(method, url, body) {
-            var opts = {
-                method: method,
-                headers: { 'Content-Type': 'application/json' }
-            };
+            var headers = { 'Content-Type': 'application/json' };
+            if (AUTH_TOKEN) headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
+            var opts = { method: method, headers: headers };
             if (body) opts.body = JSON.stringify(body);
-            return fetch(API_BASE + url, opts).then(function(r) { return r.json(); });
+            return fetch(API_BASE + url, opts).then(function(r) {
+                return r.json().then(function(data) {
+                    // 401 视为登录失效
+                    if (r.status === 401 && AUTH_TOKEN) {
+                        clearAuthLocal();
+                        renderAccountBar();
+                    }
+                    return data;
+                });
+            });
+        }
+
+        // ========== 账号栏渲染 ==========
+        function renderAccountBar() {
+            var bar = document.getElementById('accountBar');
+            if (!bar) return;
+            if (AUTH_USER) {
+                bar.innerHTML =
+                    '<span class="account-user"><span class="dot"></span>' +
+                    escapeHtml(AUTH_USER.display_name || AUTH_USER.username) + '</span>' +
+                    '<button class="account-btn" onclick="logout()">退出</button>';
+            } else {
+                bar.innerHTML =
+                    '<button class="account-btn" onclick="openAuthModal(\'login\')">登录</button>' +
+                    '<button class="account-btn" onclick="openAuthModal(\'register\')">注册</button>';
+            }
+        }
+        function escapeHtml(str) {
+            return String(str).replace(/[&<>"']/g, function(c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        }
+
+        // ========== 登录 / 注册 ==========
+        function openAuthModal(mode) {
+            authMode = mode === 'register' ? 'register' : 'login';
+            switchAuthTab(authMode);
+            document.getElementById('authUsername').value = '';
+            document.getElementById('authDisplayName').value = '';
+            document.getElementById('authPassword').value = '';
+            document.getElementById('authError').textContent = '';
+            document.getElementById('authOverlay').classList.add('active');
+        }
+        function closeAuthModal() {
+            document.getElementById('authOverlay').classList.remove('active');
+        }
+        function switchAuthTab(mode) {
+            authMode = mode;
+            document.querySelectorAll('.auth-tab').forEach(function(el) {
+                el.classList.toggle('active', el.dataset.authTab === mode);
+            });
+            document.getElementById('authTitle').textContent = mode === 'register' ? '创建账号' : '欢迎回来';
+            document.getElementById('authSubmitBtn').textContent = mode === 'register' ? '注册并登录' : '登录';
+            document.getElementById('authDisplayNameGroup').style.display = mode === 'register' ? '' : 'none';
+            document.getElementById('authError').textContent = '';
+        }
+        function submitAuth() {
+            var username = document.getElementById('authUsername').value.trim();
+            var password = document.getElementById('authPassword').value;
+            var displayName = document.getElementById('authDisplayName').value.trim();
+            var errEl = document.getElementById('authError');
+            errEl.textContent = '';
+
+            if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) {
+                errEl.textContent = '用户名需 3-20 位，仅限字母/数字/下划线';
+                return;
+            }
+            if (!password || password.length < 6) {
+                errEl.textContent = '密码至少 6 位';
+                return;
+            }
+
+            var endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
+            var payload = { username: username, password: password };
+            if (authMode === 'register' && displayName) payload.display_name = displayName;
+
+            var btn = document.getElementById('authSubmitBtn');
+            btn.disabled = true;
+            btn.textContent = '处理中...';
+
+            apiRequest('POST', endpoint, payload).then(function(res) {
+                btn.disabled = false;
+                btn.textContent = authMode === 'register' ? '注册并登录' : '登录';
+                if (!res || !res.success) {
+                    errEl.textContent = (res && res.message) || '操作失败';
+                    return;
+                }
+                // 保存登录态
+                AUTH_TOKEN = res.data.token;
+                AUTH_USER = res.data.user;
+                localStorage.setItem('daojishi_token', AUTH_TOKEN);
+                localStorage.setItem('daojishi_user', JSON.stringify(AUTH_USER));
+                closeAuthModal();
+                renderAccountBar();
+                // 登录后：拉取云端偏好 & 倒计时
+                loadPreferences().then(function() {
+                    // 若本地存在匿名数据且云端为空，则把本地数据迁移给该账号
+                    migrateLocalToAccountIfNeeded().then(function() {
+                        initData();
+                    });
+                });
+            }).catch(function() {
+                btn.disabled = false;
+                btn.textContent = authMode === 'register' ? '注册并登录' : '登录';
+                errEl.textContent = '网络异常，请稍后再试';
+            });
+        }
+        function logout() {
+            apiRequest('POST', '/auth/logout', {}).catch(function(){});
+            clearAuthLocal();
+            renderAccountBar();
+            // 退出后以匿名身份重新加载
+            countdowns = [];
+            initData();
+        }
+        function clearAuthLocal() {
+            AUTH_TOKEN = '';
+            AUTH_USER = null;
+            localStorage.removeItem('daojishi_token');
+            localStorage.removeItem('daojishi_user');
+            // 退出时必须清掉账号相关的本地缓存，避免匿名态读到上个账号的数据
+            localStorage.removeItem('daojishi_prefs');
+            localStorage.removeItem('countdowns');
+            // 偏好回到默认值，当前选择也重置
+            USER_PREFS = {
+                defaultTheme: 'pink',
+                defaultEmoji: '🎉',
+                defaultDateType: 'natural'
+            };
+            selectedEmoji = USER_PREFS.defaultEmoji;
+            selectedTheme = USER_PREFS.defaultTheme;
+            selectedDateType = USER_PREFS.defaultDateType;
+        }
+
+        // 若本账号云端无倒计时，但本地缓存有，则迁移
+        function migrateLocalToAccountIfNeeded() {
+            return apiRequest('GET', '/countdowns').then(function(res) {
+                var cloudEmpty = !(res && res.success && Array.isArray(res.data) && res.data.length > 0);
+                if (!cloudEmpty) return;
+                var local = [];
+                try { local = JSON.parse(localStorage.getItem('countdowns') || '[]'); } catch (e) {}
+                if (!Array.isArray(local) || local.length === 0) return;
+                return apiRequest('POST', '/countdowns/sync', { countdowns: local });
+            }).catch(function(){});
+        }
+
+        // ========== 用户偏好 ==========
+        function loadPreferences() {
+            if (!AUTH_TOKEN) return Promise.resolve();
+            return apiRequest('GET', '/preferences').then(function(res) {
+                if (res && res.success && res.data && typeof res.data === 'object') {
+                    USER_PREFS = Object.assign(USER_PREFS, {
+                        defaultTheme: res.data.defaultTheme || USER_PREFS.defaultTheme,
+                        defaultEmoji: res.data.defaultEmoji || USER_PREFS.defaultEmoji,
+                        defaultDateType: res.data.defaultDateType || USER_PREFS.defaultDateType
+                    });
+                    localStorage.setItem('daojishi_prefs', JSON.stringify(USER_PREFS));
+                }
+            }).catch(function(){});
+        }
+        var _savePrefsTimer = null;
+        function savePreferences() {
+            localStorage.setItem('daojishi_prefs', JSON.stringify(USER_PREFS));
+            if (!AUTH_TOKEN) return; // 未登录只写本地
+            if (_savePrefsTimer) clearTimeout(_savePrefsTimer);
+            _savePrefsTimer = setTimeout(function() {
+                apiRequest('PUT', '/preferences', USER_PREFS).catch(function(){});
+            }, 400);
         }
 
         // 从云端加载数据
         function loadFromCloud() {
-            return apiRequest('GET', '/countdowns?user_id=' + encodeURIComponent(USER_ID))
+            var url = AUTH_TOKEN
+                ? '/countdowns'
+                : '/countdowns?user_id=' + encodeURIComponent(USER_ID);
+            return apiRequest('GET', url)
                 .then(function(res) {
                     if (res.success && Array.isArray(res.data)) {
                         cloudAvailable = true;
@@ -955,24 +1272,24 @@
         // 同步到云端
         function syncToCloud() {
             if (!cloudAvailable) return Promise.resolve();
-            return apiRequest('POST', '/countdowns/sync', {
-                user_id: USER_ID,
-                countdowns: countdowns
-            }).catch(function() {});
+            var body = { countdowns: countdowns };
+            if (!AUTH_TOKEN) body.user_id = USER_ID;
+            return apiRequest('POST', '/countdowns/sync', body).catch(function() {});
         }
 
         // 云端添加
         function cloudAdd(item) {
             if (!cloudAvailable) return Promise.resolve();
-            return apiRequest('POST', '/countdowns', {
+            var body = {
                 id: item.id,
-                user_id: USER_ID,
                 name: item.name,
                 date: item.date,
                 emoji: item.emoji,
                 theme: item.theme,
                 dateType: item.dateType
-            }).catch(function() {});
+            };
+            if (!AUTH_TOKEN) body.user_id = USER_ID;
+            return apiRequest('POST', '/countdowns', body).catch(function() {});
         }
 
         // 云端更新
@@ -1278,17 +1595,17 @@
                     title.textContent = '添加倒计时';
                     document.getElementById('eventName').value = '';
                     document.getElementById('eventDate').value = '';
-                    selectedEmoji = '🎉';
-                    selectedTheme = 'pink';
-                    selectedDateType = 'natural';
+                    selectedEmoji = USER_PREFS.defaultEmoji;
+                    selectedTheme = USER_PREFS.defaultTheme;
+                    selectedDateType = USER_PREFS.defaultDateType;
                 }
             } else {
                 title.textContent = '添加倒计时';
                 document.getElementById('eventName').value = '';
                 document.getElementById('eventDate').value = '';
-                selectedEmoji = '🎉';
-                selectedTheme = 'pink';
-                selectedDateType = 'natural';
+                selectedEmoji = USER_PREFS.defaultEmoji;
+                selectedTheme = USER_PREFS.defaultTheme;
+                selectedDateType = USER_PREFS.defaultDateType;
             }
 
             updateEmojiSelection();
@@ -1386,6 +1703,12 @@
                 cloudAdd(newItem);
             }
 
+            // 记忆最近一次的偏好（作为下次新建默认值）
+            USER_PREFS.defaultEmoji = selectedEmoji;
+            USER_PREFS.defaultTheme = selectedTheme;
+            USER_PREFS.defaultDateType = selectedDateType;
+            savePreferences();
+
             saveData();
             renderCards();
             closeModal();
@@ -1433,6 +1756,9 @@
         // 点击遮罩关闭
         document.getElementById('modalOverlay').addEventListener('click', function(e) {
             if (e.target === e.currentTarget) closeModal();
+        });
+        document.getElementById('authOverlay').addEventListener('click', function(e) {
+            if (e.target === e.currentTarget) closeAuthModal();
         });
         document.getElementById('confirmOverlay').addEventListener('click', function(e) {
             if (e.target === e.currentTarget) closeConfirm();
@@ -1581,7 +1907,25 @@
         });
 
         // 初始渲染 - 从云端加载数据
-        initData();
+        renderAccountBar();
+        (function bootstrap() {
+            // 若本地有 token，先校验一次
+            var p = Promise.resolve();
+            if (AUTH_TOKEN) {
+                p = apiRequest('GET', '/auth/me').then(function(res) {
+                    if (res && res.success && res.data) {
+                        AUTH_USER = res.data;
+                        localStorage.setItem('daojishi_user', JSON.stringify(AUTH_USER));
+                        renderAccountBar();
+                        return loadPreferences();
+                    } else {
+                        clearAuthLocal();
+                        renderAccountBar();
+                    }
+                }).catch(function(){ /* 网络错误时沿用本地缓存 */ });
+            }
+            p.then(function() { initData(); });
+        })();
     </script>
 </body>
 </htm

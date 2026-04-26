@@ -1,0 +1,8 @@
+**/.git
+**/.DS_Store
+server/data
+server/logs
+server/*.log
+*.log
+.vscode
+.codebuddy
